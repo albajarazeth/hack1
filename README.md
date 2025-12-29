@@ -17,6 +17,7 @@ A comprehensive system for extracting comments from YouTube videos and generatin
 - **Detailed progress logging**: Shows detailed progress during embedding, deduplication, and clustering
 - **Clustering summary JSON files**: Saves detailed clustering results as JSON files in the embed folder
 - **Google Colab integration**: Monitors Google Drive for new comment files and processes them automatically
+- **Sentiment classification**: Automatically classifies emotions in comments using the GoEmotions model with 27-class emotion detection
 
 ## Prerequisites
 
@@ -89,6 +90,21 @@ The script will:
 - Show detailed progress logging during all processing steps
 - Save the processed embeddings to the output directory
 
+### Sentiment Classification with GoEmotions
+Run the sentiment classifier to automatically detect emotions in YouTube comments using the GoEmotions model:
+
+```bash
+python sentiment_classifier.py
+```
+
+The script will:
+- Monitor the Google Drive folder for new comment JSON files
+- Classify emotions using the AnasAlokla/multilingual_go_emotions model (27-class emotion detection)
+- Apply sigmoid-based multi-label classification for accurate emotion prediction
+- Save sentiment results as JSON files with emotion labels
+- Support dynamic label loading from model configuration
+- Process comments in batches for efficient GPU utilization
+
 ### Other Utilities
 
 - `ApiKeyTester.java` - Test your YouTube API keys
@@ -133,6 +149,7 @@ src/
 │   ├── YouTubeSearchHelper.java    # YouTube video information helper
 │   └── YoutubeCommentScraper.java  # Core comment extraction
 auto_embed_comments_final.py        # Auto-embedding with deduplication and clustering for Google Colab
+sentiment_classifier.py             # Auto-sentiment classification using GoEmotions model
 README.md                         # This file
 ```
 
@@ -142,3 +159,4 @@ README.md                         # This file
 - `comments/` - Output directory for extracted comments
 - `.env` - Environment file for API keys (not committed to git)
 - `auto_embed_comments_final.py` - Auto-embedding script with deduplication and clustering for Google Colab
+- `sentiment_classifier.py` - Auto-sentiment classification script using GoEmotions model for emotion detection
