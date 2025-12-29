@@ -5,7 +5,12 @@ This script monitors a specific folder in Google Drive for new comment files
 and automatically generates embeddings for them using the same logic as embedComments (1).ipynb
 """
 
+
 import os
+os.environ["THREADPOOLCTL_DISABLE"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 import json
 import torch
 import numpy as np
@@ -24,6 +29,10 @@ import glob
 import sys
 from packaging import version
 
+# Import for clustering
+from sklearn.cluster import MiniBatchKMeans
+from sklearn.metrics import silhouette_score
+
 # Set up detailed logging
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +48,7 @@ def install_and_check_packages():
     logger.info("Installing required packages...")
 
     # Install packages - updated to fix dependency issues
-    os.system('pip install -U transformers accelerate sentencepiece packaging')
+    os.system('pip install -U transformers accelerate sentencepiece packaging scikit-learn')
     os.system('pip install "numpy<2.0"')
 
     # Simple version check without exiting
@@ -63,7 +72,7 @@ def cosine_deduplicate(
     Colab-optimized cosine-based deduplication.
     Assumes embeddings are L2-normalized.
     """
-    logger.info(f"🧹 Running cosine-based deduplication (threshold={similarity_threshold})...")
+    logger.info(f"🧹 Deduplicating embeddings")
 
     if len(embeddings) == 0:
         logger.info("⚠️  No embeddings to deduplicate")
@@ -120,6 +129,129 @@ def cosine_deduplicate(
         logger.info(f"🧠 Deduplication removed {(1 - len(dedup_embeddings)/len(embeddings))*100:.2f}% of comments")
 
     return dedup_embeddings, dedup_ids, dedup_texts
+
+
+def kmeans_clustering_with_silhouette(
+    embeddings: np.ndarray,
+    max_clusters: int = None,
+    random_state: int = 42
+) -> tuple[np.ndarray, np.ndarray, int, float | None]:
+    """
+    Perform K-means clustering with silhouette-based optimal k selection.
+
+    Args:
+        embeddings: L2-normalized embeddings array (M, D)
+        max_clusters: Maximum number of clusters to consider (default: min(20, int(sqrt(M))))
+        random_state: Random state for reproducibility
+
+    Returns:
+        tuple: (cluster_labels, cluster_centers, best_k, best_silhouette_score)
+    """
+    if len(embeddings) == 0:
+        logger.info("⚠️  No embeddings to cluster")
+        return np.array([]), np.array([]), 0, 0.0
+
+    if len(embeddings) == 1:
+        # Single embedding gets assigned to cluster 0
+        logger.info("⚠️  Only one embedding, assigning to single cluster")
+        return np.array([0]), embeddings.reshape(1, -1), 1, None
+
+    # Determine max_clusters if not provided
+    if max_clusters is None:
+        max_clusters = min(20, int(np.sqrt(len(embeddings))))
+
+    # Define range for k (must be at least 2)
+    min_k = 2
+    max_k = min(max_clusters, len(embeddings))
+
+    if max_k < min_k:
+        max_k = min_k
+
+    if max_k < 2:
+        # If we have less than 2 points, assign all to one cluster
+        logger.info(f"⚠️  Less than 2 embeddings ({len(embeddings)}), assigning to single cluster")
+        return np.zeros(len(embeddings), dtype=int), embeddings[:1], 1, None
+
+    logger.info(f"🔍 Starting clustering process for {len(embeddings)} embeddings")
+    logger.info(f"🔍 Testing cluster numbers from k={min_k} to k={max_k}")
+
+    # Store silhouette scores for each k
+    k_scores = []
+
+    # Test different numbers of clusters
+    total_clusters_to_test = max_k - min_k + 1
+    logger.info(f"📊 Testing {total_clusters_to_test} different cluster numbers...")
+
+    for k in range(min_k, max_k + 1):
+        try:
+            logger.info(f"🧪 Testing k={k} clusters ({k-min_k+1}/{total_clusters_to_test})")
+
+            # Fit MiniBatchKMeans
+            kmeans = MiniBatchKMeans(
+                n_clusters=k,
+                random_state=random_state,
+                n_init=3,  # Reduced for speed
+                batch_size=min(1024, len(embeddings))  # Use appropriate batch size
+            )
+            cluster_labels = kmeans.fit_predict(embeddings)
+
+            # Calculate silhouette score (only possible if k > 1 and k < n_samples)
+            if k > 1 and k < len(embeddings):
+                logger.info(f"📈 Computing silhouette score for k={k}...")
+                score = silhouette_score(embeddings, cluster_labels, metric="euclidean")
+                k_scores.append((k, score))
+                logger.info(f"📊 k={k} → silhouette={score:.3f}")
+            else:
+                # For edge cases where silhouette score is undefined
+                score = -1  # Invalid score
+                k_scores.append((k, score))
+                logger.info(f"📊 k={k} → silhouette=N/A (edge case)")
+
+        except Exception as e:
+            logger.warning(f"⚠️  Error computing k={k}: {e}")
+            continue
+
+    if not k_scores:
+        logger.warning("⚠️  No valid silhouette scores computed, using k=2")
+        kmeans = MiniBatchKMeans(
+            n_clusters=2,
+            random_state=random_state,
+            n_init=3,
+            batch_size=min(1024, len(embeddings))
+        )
+        cluster_labels = kmeans.fit_predict(embeddings)
+        return cluster_labels, kmeans.cluster_centers_, 2, None
+
+    # Find the k with the highest silhouette score
+    logger.info(f"🔍 Analyzing results from {len(k_scores)} tested cluster numbers...")
+    best_k, best_score = max(k_scores, key=lambda x: x[1])
+
+    # Check for plateau (prefer smaller k if difference is small)
+    for k, score in k_scores:
+        if score >= best_score - 0.01 and k < best_k:
+            best_k = k
+            best_score = score
+
+    if best_score is not None:
+        logger.info(f"🏆 Best result: k={best_k} clusters with silhouette score {best_score:.3f}")
+        logger.info(f"✅ Optimal clusters selected: k={best_k} (silhouette={best_score:.3f})")
+    else:
+        logger.info(f"✅ Optimal clusters selected: k={best_k} (silhouette=N/A)")
+
+    logger.info(f"🔄 Running final clustering with k={best_k}...")
+
+    # Final clustering with the best k
+    final_kmeans = MiniBatchKMeans(
+        n_clusters=best_k,
+        random_state=random_state,
+        n_init=10,  # More iterations for final result
+        batch_size=min(1024, len(embeddings))
+    )
+    final_labels = final_kmeans.fit_predict(embeddings)
+
+    logger.info(f"🎯 Clustering completed: {len(np.unique(final_labels))} clusters created for {len(final_labels)} embeddings")
+
+    return final_labels, final_kmeans.cluster_centers_, best_k, best_score
 
 def mount_drive():
     """Mount Google Drive and handle Colab environment"""
@@ -463,13 +595,13 @@ class CommentEmbedder:
             )
 
             if existing_batches:
-                logger.info(f"🔄 Resuming from {len(existing_batches)} completed batches...")
+                logger.info(f"🔄 Resuming embeddings")
                 for batch_file in existing_batches:
                     with np.load(batch_file) as batch_data:
                         all_embeddings.append(batch_data['embeddings'])
                         processed_count += len(batch_data['ids'])
                 batch_counter = len(existing_batches)
-                logger.info(f"🔄 Resuming from comment #{processed_count}")
+                logger.info(f"🔄 Resuming embeddings")
 
         except (ValueError, IndexError) as e:
             logger.warning(f"⚠️  Warning: Could not parse batch filenames in {tmp_dir}. Starting from scratch. Error: {e}")
@@ -559,25 +691,70 @@ class CommentEmbedder:
             similarity_threshold=0.995
         )
 
-        # Save embeddings and IDs to a compressed .npz file
-        logger.info(f"💾 Saving embeddings to: {output_path}")
+        # Apply K-means clustering with silhouette-based k selection
+        logger.info(f"🔍 Starting clustering for {len(dedup_embeddings)} deduplicated embeddings...")
+        cluster_labels, cluster_centers, best_k, best_silhouette = kmeans_clustering_with_silhouette(
+            dedup_embeddings
+        )
+        if best_silhouette is not None:
+            logger.info(f"✅ Clustering completed: {best_k} clusters with silhouette score {best_silhouette:.3f}")
+        else:
+            logger.info(f"✅ Clustering completed: {best_k} clusters (silhouette score N/A)")
+
+        # Compute distance from each embedding to its assigned cluster centroid
+        logger.info(f"📏 Computing distance-to-centroid for clustered comments...")
+        distances_to_centroid = np.zeros(len(dedup_embeddings))
+        for i in range(len(dedup_embeddings)):
+            centroid = cluster_centers[cluster_labels[i]]
+            distances_to_centroid[i] = np.linalg.norm(dedup_embeddings[i] - centroid)
+        logger.info(f"📐 Computed distance-to-centroid for all clustered comments")
+
+        # Save embeddings, IDs, cluster labels, centroids, and distances to a compressed .npz file
+        logger.info(f"💾 Saving final embeddings with clustering results")
         np.savez_compressed(
             output_path,
             embeddings=dedup_embeddings,
-            ids=dedup_comment_ids
+            ids=dedup_comment_ids,
+            labels=cluster_labels,
+            centroids=cluster_centers,
+            distances=distances_to_centroid
         )
-        logger.info(f"✅ Embeddings saved successfully")
+        logger.info(f"✅ Embeddings with clustering saved successfully")
+
+        # Create and save clustering summary JSON file
+        clustering_summary = {
+            "input_file": str(input_path.name),
+            "output_file": str(output_path.name),
+            "total_comments": len(comments),
+            "deduplicated_comments": len(dedup_comments),
+            "embedding_dimension": dedup_embeddings.shape[1],
+            "num_clusters": int(best_k),
+            "silhouette_score": best_silhouette,
+            "cluster_distribution": {str(cluster_id): int((cluster_labels == cluster_id).sum())
+                                   for cluster_id in np.unique(cluster_labels)},
+            "processing_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "clustering_algorithm": "MiniBatchKMeans with silhouette optimization"
+        }
+
+        # Save clustering summary to JSON file in the same directory
+        summary_json_path = output_path.with_suffix('.json')
+        with open(summary_json_path, 'w', encoding='utf-8') as f:
+            json.dump(clustering_summary, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"📋 Clustering summary saved to: {summary_json_path.name}")
 
         # Clean up temporary directory on success
         shutil.rmtree(tmp_dir)
-        logger.debug(f"🗑️  Cleaned up temporary directory: {tmp_dir}")
+        logger.info(f"🧹 Cleaning up temp directory")
 
         result = {
             "input_file": str(input_path),
             "output_file": str(output_path),
             "num_comments": len(comments),
             "num_deduplicated": len(dedup_comments),
-            "embedding_dim": dedup_embeddings.shape[1]
+            "embedding_dim": dedup_embeddings.shape[1],
+            "num_clusters": best_k,
+            "silhouette_score": best_silhouette
         }
 
         # Add optimization stats to result
@@ -588,6 +765,11 @@ class CommentEmbedder:
         logger.info(f"   📊 Original comments: {result['num_comments']:,}")
         logger.info(f"   📊 Deduplicated comments: {result['num_deduplicated']:,}")
         logger.info(f"   📐 Embedding dimension: {result['embedding_dim']}")
+        logger.info(f"   🎯 Number of clusters: {result['num_clusters']}")
+        if result['silhouette_score'] is not None:
+            logger.info(f"   📊 Silhouette score: {result['silhouette_score']:.3f}")
+        else:
+            logger.info(f"   📊 Silhouette score: N/A")
         logger.info(f"   💾 Output file size: {output_path.stat().st_size / (1024*1024):.2f} MB")
 
         return result
@@ -673,12 +855,10 @@ class AutoEmbeddingMonitor:
                 # Create output path in embeddings directory
                 output_path = self.embeddings_dir / f"{file_path.stem}_embeddings.npz"
 
-                # Check if embedding file already exists
+                # Check if embedding file already exists - delete and reprocess
                 if output_path.exists():
-                    logger.warning(f"⚠️  Embedding file already exists: {output_path.name}")
-                    # Add to processed files to avoid reprocessing
-                    self.processed_files.add(file_path)
-                    continue
+                    logger.warning(f"⚠️  Output exists — deleting and reprocessing")
+                    output_path.unlink()
 
                 # Process the file
                 logger.info(f"   ⚙️  Starting embedding process...")

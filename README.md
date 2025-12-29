@@ -1,6 +1,6 @@
 # YouTube Comments Extractor
 
-A comprehensive system for extracting comments from YouTube videos and generating embeddings with automatic deduplication. The system includes both Java-based comment extraction and Python-based embedding generation.
+A comprehensive system for extracting comments from YouTube videos and generating embeddings with automatic deduplication and clustering. The system includes both Java-based comment extraction and Python-based embedding generation.
 
 ## Features
 
@@ -12,6 +12,10 @@ A comprehensive system for extracting comments from YouTube videos and generatin
 - **Caching**: Caches video information to minimize API calls
 - **Embedding generation**: Creates semantic embeddings for comments using transformer models
 - **Automatic deduplication**: Removes similar comments using cosine similarity
+- **K-means clustering**: Groups similar comments using optimal cluster selection with silhouette analysis
+- **Distance-to-centroid computation**: Calculates distance from each comment to its cluster centroid
+- **Detailed progress logging**: Shows detailed progress during embedding, deduplication, and clustering
+- **Clustering summary JSON files**: Saves detailed clustering results as JSON files in the embed folder
 - **Google Colab integration**: Monitors Google Drive for new comment files and processes them automatically
 
 ## Prerequisites
@@ -68,7 +72,7 @@ Add video IDs to `videoList.txt` (one per line), then run:
 mvn exec:java -Dexec.mainClass="com.lucy.YouTubeCommentsExtractor" -Dexec.args="videoList.txt"
 ```
 
-### Generate Embeddings with Auto-Deduplication
+### Generate Embeddings with Auto-Deduplication and Clustering
 Run the auto-embedding script in Google Colab to monitor a Google Drive folder and automatically generate embeddings for new comment files:
 
 ```bash
@@ -79,6 +83,10 @@ The script will:
 - Monitor the specified Google Drive folder for new comment JSON files
 - Generate semantic embeddings using the multilingual-e5-small model
 - Apply cosine-based deduplication to remove similar comments
+- Perform K-means clustering with silhouette-based optimal cluster selection
+- Compute distance-to-centroid for each comment
+- Save detailed clustering summary as JSON files in the embed folder
+- Show detailed progress logging during all processing steps
 - Save the processed embeddings to the output directory
 
 ### Other Utilities
@@ -93,7 +101,21 @@ The script will:
 
 Comments are saved in the `comments/` directory as JSON files with the naming convention `{VIDEO_ID}_comments.json`. Each file contains an array of comment strings.
 
-Embeddings are saved as compressed `.npz` files with deduplication applied, containing both the embedding vectors and corresponding IDs.
+Embeddings are saved as compressed `.npz` files with deduplication and clustering applied, containing:
+- Embedding vectors
+- Comment IDs
+- Cluster labels
+- Cluster centroids
+- Distance-to-centroid values
+
+Clustering summaries are saved as `.json` files in the embed folder with the same base name as the corresponding `.npz` file, containing:
+- Input/output file information
+- Total and deduplicated comment counts
+- Embedding dimension
+- Number of clusters and silhouette score
+- Cluster distribution
+- Processing timestamp
+- Clustering algorithm used
 
 ## Project Structure
 
@@ -110,7 +132,8 @@ src/
 │   ├── YouTubeCommentsExtractor.java # Main extractor for YouTube videos
 │   ├── YouTubeSearchHelper.java    # YouTube video information helper
 │   └── YoutubeCommentScraper.java  # Core comment extraction
-auto_embed_comments_final.py        # Auto-embedding with deduplication for Google Colab
+auto_embed_comments_final.py        # Auto-embedding with deduplication and clustering for Google Colab
+README.md                         # This file
 ```
 
 ## Files
@@ -118,4 +141,4 @@ auto_embed_comments_final.py        # Auto-embedding with deduplication for Goog
 - `videoList.txt` - Input file with YouTube video IDs (one per line)
 - `comments/` - Output directory for extracted comments
 - `.env` - Environment file for API keys (not committed to git)
-- `auto_embed_comments_final.py` - Auto-embedding script with deduplication for Google Colab
+- `auto_embed_comments_final.py` - Auto-embedding script with deduplication and clustering for Google Colab
